@@ -62,23 +62,23 @@ jobs:
 
       - name: source
         working-directory: src
-        run: cilock run --no-product-binding --step source -a "$ATTESTORS" -o "$EVID/source.att.json" -- bash .attest/source.sh
+        run: cilock run --no-product-binding --enable-archivista --step source -a "$ATTESTORS" -o "$EVID/source.att.json" -- bash .attest/source.sh
 
       - name: deps
         working-directory: src
-        run: cilock run --no-product-binding --step deps -a "$ATTESTORS" -o "$EVID/deps.att.json" -- bash .attest/deps.sh
+        run: cilock run --no-product-binding --enable-archivista --step deps -a "$ATTESTORS" -o "$EVID/deps.att.json" -- bash .attest/deps.sh
 
       - name: build
         working-directory: src
-        run: cilock run --no-product-binding --step build -a "$ATTESTORS" -o "$EVID/build.att.json" -- ./.ci/ci-script.sh
+        run: mkdir -p "$BUILD_DIR" "$INSTALL_PREFIX" && cilock run --no-product-binding --enable-archivista --step build -a "$ATTESTORS" -o "$EVID/build.att.json" -- ./.ci/ci-script.sh
 
       - name: app-bundle
         working-directory: src
-        run: cilock run --no-product-binding --step app-bundle -a "$ATTESTORS" -o "$EVID/app-bundle.att.json" -- ./packaging/macosx/3_make_hb_darktable_package.sh
+        run: cilock run --no-product-binding --enable-archivista --step app-bundle -a "$ATTESTORS" -o "$EVID/app-bundle.att.json" -- ./packaging/macosx/3_make_hb_darktable_package.sh
 
       - name: dmg
         working-directory: src
-        run: cilock run --no-product-binding --step dmg -a "$ATTESTORS" -o "$EVID/dmg.att.json" -- ./packaging/macosx/4_make_hb_darktable_dmg.sh
+        run: cilock run --no-product-binding --enable-archivista --step dmg -a "$ATTESTORS" -o "$EVID/dmg.att.json" -- ./packaging/macosx/4_make_hb_darktable_dmg.sh
 
       - name: locate dmg
         working-directory: src
@@ -94,11 +94,11 @@ jobs:
 
       - name: sbom
         working-directory: src
-        run: cilock run --no-product-binding --step sbom -a "$ATTESTORS,sbom" -o "$EVID/sbom.att.json" -- syft dir:build/macosx/package -o spdx-json=build/macosx/darktable.spdx.json
+        run: cilock run --no-product-binding --enable-archivista --step sbom -a "$ATTESTORS,sbom" -o "$EVID/sbom.att.json" -- syft dir:build/macosx/package -o spdx-json=build/macosx/darktable.spdx.json
 
       - name: scan
         working-directory: src
-        run: cilock run --no-product-binding --step scan -a "$ATTESTORS,trivy" --ignore-command-exit-code -o "$EVID/scan.att.json" -- trivy fs --scanners vuln --format json --output build/macosx/darktable.trivy.json build/macosx/package
+        run: cilock run --no-product-binding --enable-archivista --step scan -a "$ATTESTORS,trivy" --ignore-command-exit-code -o "$EVID/scan.att.json" -- trivy fs --scanners vuln --format json --output build/macosx/darktable.trivy.json build/macosx/package
 
       - name: summary
         if: always()
