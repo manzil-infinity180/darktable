@@ -46,7 +46,7 @@ jobs:
         run: git clone -b ${{ github.ref_name }} https://github.com/${{ github.repository }} src
 
       - name: source
-        uses: aflock-ai/cilock-action@v4.5.0
+        uses: aflock-ai/cilock-action@v3.0.8
         with:
           step: source
           workingdir: src
@@ -54,7 +54,7 @@ jobs:
           command: "bash .attest/source.sh"
 
       - name: deps
-        uses: aflock-ai/cilock-action@v4.5.0
+        uses: aflock-ai/cilock-action@v3.0.8
         with:
           step: deps
           workingdir: src
@@ -62,7 +62,7 @@ jobs:
           command: "bash .attest/deps.sh"
 
       - name: build
-        uses: aflock-ai/cilock-action@v4.5.0
+        uses: aflock-ai/cilock-action@v3.0.8
         with:
           step: build
           workingdir: src
@@ -70,7 +70,7 @@ jobs:
           command: "./.ci/ci-script.sh"
 
       - name: app-bundle
-        uses: aflock-ai/cilock-action@v4.5.0
+        uses: aflock-ai/cilock-action@v3.0.8
         with:
           step: app-bundle
           workingdir: src
@@ -78,7 +78,7 @@ jobs:
           command: "./packaging/macosx/3_make_hb_darktable_package.sh"
 
       - name: dmg
-        uses: aflock-ai/cilock-action@v4.5.0
+        uses: aflock-ai/cilock-action@v3.0.8
         with:
           step: dmg
           workingdir: src
@@ -100,7 +100,7 @@ jobs:
       # SBOM + scan name the .dmg explicitly as a subject, so the platform's
       # subject graph links them to the installer (for `cilock bundle create`).
       - name: sbom
-        uses: aflock-ai/cilock-action@v4.5.0
+        uses: aflock-ai/cilock-action@v3.0.8
         with:
           step: sbom
           workingdir: src
@@ -109,7 +109,7 @@ jobs:
           command: "syft dir:build/macosx/package -o spdx-json=build/macosx/darktable.spdx.json"
 
       - name: scan
-        uses: aflock-ai/cilock-action@v4.5.0
+        uses: aflock-ai/cilock-action@v3.0.8
         with:
           step: scan
           workingdir: src
