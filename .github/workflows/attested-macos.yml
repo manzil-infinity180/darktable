@@ -58,6 +58,20 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/cilock" version
 
+      # Diagnostic: print the CLAIMS (never the token) of the workflow OIDC token for
+      # each audience cilock uses, to compare with the `cilock trust` credential
+      # (issuer token.actions.githubusercontent.com, subject repo:manzil-infinity180/darktable:*).
+      - name: oidc claims
+        run: |
+          for aud in https://platform.testifysec.com/archivista https://platform.testifysec.com/login sigstore; do
+            tok=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$aud" | jq -r .value)
+            echo "== audience requested: $aud"
+            echo "$tok" | cut -d. -f2 | tr '_-' '/+' | awk '{ l=length($0)%4; if(l==2)$0=$0"=="; else if(l==3)$0=$0"="; print }' \
+              | base64 -d 2>/dev/null | jq '{iss, sub, aud, repository, repository_owner, ref, workflow_ref, job_workflow_ref}'
+          done
+          cilock login --workflow-identity 2>&1 | tail -5 || true
+
       # The clone itself cannot be attested by the git attestor (no repo exists
       # until it finishes). Every later step records the commit it built from.
       - name: clone
