@@ -1,0 +1,95 @@
+# Attested macOS build of darktable — experiment on a personal fork.
+#
+# Phase 0 (this version): the upstream nightly macOS job, copied step for step,
+# with NO attestation. It exists to measure the baseline wall time per step
+# before cilock wraps anything.
+#
+# Runs only on pushes to the `attested-build` branch or by hand. It never
+# touches tags or releases (unlike upstream nightly.yml's upload_to_release job).
+
+name: attested-macos
+
+on:
+  push:
+    branches: [attested-build]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: macOS arm64 (baseline, no attestation)
+    runs-on: macos-15
+    timeout-minutes: 180
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      CC: cc
+      CXX: c++
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
+      SRC_DIR: ${{ github.workspace }}/src
+      BUILD_DIR: ${{ github.workspace }}/src/build
+      INSTALL_PREFIX: ${{ github.workspace }}/src/build/macosx
+      ECO: -DBINARY_PACKAGE_BUILD=ON -DBUILD_CURVE_TOOLS=ON -DBUILD_NOISE_TOOLS=ON -DUSE_GRAPHICSMAGICK=ON -DUSE_IMAGEMAGICK=OFF
+      CMAKE_BUILD_TYPE: Release
+      GENERATOR: Ninja
+      TARGET: skiptest
+    steps:
+      - name: checkout
+        run: |
+          # Full clone: the version string for the .dmg comes from git describe.
+          git clone -b ${{ github.ref_name }} https://github.com/${{ github.repository }} src
+          cd src
+          # The fork has no release-* tags of its own; fetch them from upstream
+          # so git describe produces the same version string upstream would.
+          git fetch --tags https://github.com/darktable-org/darktable 'refs/tags/release-*:refs/tags/release-*'
+          git submodule init
+          git config submodule.src/tests/integration.update none
+          git submodule update
+
+      - name: deps
+        run: |
+          brew untap --force aws/tap || true
+          brew update > /dev/null || true
+          cd src/.ci
+          export HOMEBREW_NO_INSTALL_UPGRADE=1
+          brew bundle --verbose || true
+          export HOMEBREW_NO_INSTALL_FROM_API=1
+          brew developer on
+          gm_formula=`brew edit --quiet --print-path graphicsmagick`
+          cat $gm_formula | sed 's/--with-modules/--disable-installed/1' > gm_formula.tmp
+          mv gm_formula.tmp $gm_formula
+          brew reinstall --build-from-source --force --quiet graphicsmagick
+
+      - name: build
+        run: |
+          cmake -E make_directory "${BUILD_DIR}"
+          cmake -E make_directory "${INSTALL_PREFIX}"
+          ./src/.ci/ci-script.sh
+
+      - name: app-bundle
+        run: ./src/packaging/macosx/3_make_hb_darktable_package.sh
+
+      - name: dmg
+        run: ./src/packaging/macosx/4_make_hb_darktable_dmg.sh
+
+      - name: version
+        run: |
+          cd "${SRC_DIR}"
+          echo "VERSION=$(git describe --tags --match release-* | sed 's/^release-//;s/-/+/;s/-/~/;s/rc/~rc/')" >> "$GITHUB_ENV"
+          echo "ARCHITECTURE=$(uname -m)" >> "$GITHUB_ENV"
+
+      - name: record
+        run: |
+          DMG="${INSTALL_PREFIX}/darktable-${VERSION}-${ARCHITECTURE}.dmg"
+          ls -la "$DMG"
+          echo "dmg sha256: $(shasum -a 256 "$DMG" | cut -c1-64)"
+          du -sh "${SRC_DIR}" "${BUILD_DIR}" 2>/dev/null || true
+          find "${SRC_DIR}" -type f | wc -l | xargs echo "files in checkout+build:"
+
+      - name: upload
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ env.INSTALL_PREFIX }}/darktable-${{ env.VERSION }}-${{ env.ARCHITECTURE }}.dmg
+          name: darktable-macos-baseline
+          retention-days: 3
