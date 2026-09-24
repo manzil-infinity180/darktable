@@ -29,6 +29,9 @@ jobs:
     name: macOS arm64 (attested)
     runs-on: macos-15
     timeout-minutes: 240
+    outputs:
+      dmg_tag: ${{ steps.publish.outputs.dmg_tag }}
+      dmg_hex: ${{ steps.publish.outputs.dmg_hex }}
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
       CC: cc
@@ -90,7 +93,9 @@ jobs:
           echo "DMG=$DMG" >> "$GITHUB_ENV"
           echo "DMG_HEX=$HEX" >> "$GITHUB_ENV"
           echo "dmg sha256: $HEX"
-          brew install syft trivy
+          # OCI tags cannot contain '+' or '~', so tag by short commit instead of VERSION.
+          echo "DMG_TAG=nightly-$(git rev-parse --short=10 HEAD)-$(uname -m)" >> "$GITHUB_ENV"
+          brew install syft trivy oras
 
       - name: sbom
         working-directory: src
@@ -100,11 +105,54 @@ jobs:
         working-directory: src
         run: cilock run --no-product-binding --enable-archivista --step scan -a "$ATTESTORS,trivy" --ignore-command-exit-code -o "$EVID/scan.att.json" -- trivy fs --scanners vuln --format json --output build/macosx/darktable.trivy.json build/macosx/package
 
+      # --- Phase 2: bundle every record linked to the .dmg, store both in JFrog ---
+      - name: bundle
+        run: |
+          # Preferred: ask the platform for every envelope reachable from the .dmg's
+          # digest through its subject graph (what a release gate would do).
+          if cilock bundle create -s "sha256:${DMG_HEX}" -o "$EVID/darktable-bundle.tar.gz"; then
+            echo "BUNDLE_SOURCE=platform" >> "$GITHUB_ENV"
+            cilock bundle inspect "$EVID/darktable-bundle.tar.gz" || true
+          else
+            # Fallback: the envelopes this job just wrote, plus their inventories.
+            echo "::warning::cilock bundle create found nothing for sha256:${DMG_HEX}; bundling local envelopes instead"
+            tar czf "$EVID/darktable-bundle.tar.gz" -C "$EVID" $(cd "$EVID" && ls *.att.json *-inventory.json 2>/dev/null)
+            echo "BUNDLE_SOURCE=local" >> "$GITHUB_ENV"
+          fi
+          ls -la "$EVID/darktable-bundle.tar.gz"
+          echo "bundle sha256: $(shasum -a 256 "$EVID/darktable-bundle.tar.gz" | cut -c1-64)"
+
+      - name: publish to jfrog
+        id: publish
+        env:
+          JFROG_USER: ${{ secrets.JFROG_USER }}
+          JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
+          REG: trialf8c48c.jfrog.io
+          REPO: trialf8c48c.jfrog.io/docker-trial/darktable
+        run: |
+          printf '%s' "$JFROG_TOKEN" | oras login "$REG" -u "$JFROG_USER" --password-stdin
+          # The installer, as an OCI artifact under a readable tag.
+          ( cd "$(dirname "$DMG")" && oras push "$REPO:$DMG_TAG" \
+              --artifact-type application/vnd.darktable.dmg.v1 \
+              "$(basename "$DMG"):application/x-apple-diskimage" )
+          # The evidence, filed under the installer's own fingerprint: the bundle
+          # plus every envelope and inventory, so a downloader can use either.
+          ( cd "$EVID" && oras push "$REPO:sha256-${DMG_HEX}.att" \
+              --artifact-type application/vnd.cilock.evidence.v1 \
+              darktable-bundle.tar.gz:application/vnd.cilock.bundle.v1+gzip \
+              $(ls *.att.json | sed 's/$/:application\/vnd.dsse.envelope.v1+json/') \
+              $(ls *-inventory.json 2>/dev/null | sed 's/$/:application\/json/') )
+          oras repo tags "$REPO"
+          echo "dmg_tag=$DMG_TAG" >> "$GITHUB_OUTPUT"
+          echo "dmg_hex=$DMG_HEX" >> "$GITHUB_OUTPUT"
+
       - name: summary
         if: always()
         run: |
           ls -la "$EVID" || true
           echo "dmg sha256: ${DMG_HEX:-unknown}"
+          echo "dmg tag:    ${DMG_TAG:-unknown}"
+          echo "bundle:     ${BUNDLE_SOURCE:-not built}"
 
       - name: upload
         if: always()
@@ -117,3 +165,63 @@ jobs:
             ${{ env.EVID }}
             src/build/macosx/darktable.spdx.json
             src/build/macosx/darktable.trivy.json
+
+  # --- Phase 2/3: a downloader on a clean machine. It knows only the installer's
+  # tag. It pulls the .dmg, fingerprints it, finds the evidence BY that
+  # fingerprint, and checks every signed record binds to the same commit and
+  # that the chain covers every step. (Policy-based `cilock verify` is phase 3.)
+  downloader:
+    name: download from JFrog and check
+    needs: macos
+    runs-on: ubuntu-latest
+    env:
+      REG: trialf8c48c.jfrog.io
+      REPO: trialf8c48c.jfrog.io/docker-trial/darktable
+      DMG_TAG: ${{ needs.macos.outputs.dmg_tag }}
+      CILOCK_SKIP_VERSION_CHECK: "1"
+    steps:
+      - name: tools
+        run: |
+          curl -fsSL https://cilock.dev/install.sh | CILOCK_BIN_DIR="$HOME/.local/bin" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          ORAS_VERSION=1.2.3
+          curl -fsSL "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz" | tar xz -C "$HOME/.local/bin" oras
+
+      - name: pull installer and evidence
+        env:
+          JFROG_USER: ${{ secrets.JFROG_USER }}
+          JFROG_TOKEN: ${{ secrets.JFROG_TOKEN }}
+        run: |
+          printf '%s' "$JFROG_TOKEN" | oras login "$REG" -u "$JFROG_USER" --password-stdin
+          mkdir -p download/evidence
+          ( cd download && oras pull "$REPO:$DMG_TAG" )
+          DMG=$(ls download/*.dmg)
+          HEX=$(sha256sum "$DMG" | cut -c1-64)
+          echo "downloaded: $DMG"
+          echo "sha256:     $HEX"
+          [ "$HEX" = "${{ needs.macos.outputs.dmg_hex }}" ] && echo "matches what CI built" || { echo "::error::digest mismatch"; exit 1; }
+          # Derive the evidence tag from the file's own hash. No lookup service.
+          ( cd download/evidence && oras pull "$REPO:sha256-${HEX}.att" )
+          ls -la download/evidence
+          echo "HEX=$HEX" >> "$GITHUB_ENV"
+
+      - name: check the evidence
+        run: |
+          cd download/evidence
+          cilock bundle inspect darktable-bundle.tar.gz || echo "(bundle is the local fallback, not a platform bundle)"
+          echo
+          printf '%-12s %-10s %-42s %s\n' STEP SIGNER COMMIT "EXIT"
+          for f in *.att.json; do
+            step=$(jq -r .payload "$f" | base64 -d | jq -r .predicate.name)
+            commit=$(jq -r .payload "$f" | base64 -d | jq -r '[.subject[].name | select(test("commithash:"))][0] | sub(".*commithash:";"")')
+            exitc=$(jq -r .payload "$f" | base64 -d | jq -r '[.predicate.attestations[] | select(.type|test("command-run")) | .attestation.exitcode][0]')
+            signer=$(jq -r '.signatures[0].certificate // "key"' "$f" | head -c 12)
+            printf '%-12s %-10s %-42s %s\n' "$step" "${signer:+cert}" "$commit" "$exitc"
+          done
+          echo
+          commits=$(for f in *.att.json; do jq -r .payload "$f" | base64 -d | jq -r '[.subject[].name | select(test("commithash:"))][0]'; done | sort -u | wc -l)
+          [ "$commits" = "1" ] && echo "every record names the same commit" || { echo "::error::records name $commits different commits"; exit 1; }
+          for s in source deps build app-bundle dmg sbom scan; do
+            [ -f "$s.att.json" ] || { echo "::error::missing record for step $s"; exit 1; }
+          done
+          echo "all 7 steps present"
