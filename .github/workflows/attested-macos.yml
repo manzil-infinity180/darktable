@@ -44,6 +44,8 @@ jobs:
       CILOCK_SKIP_VERSION_CHECK: "1"
       # Same attestors on every step; extras are appended per step.
       ATTESTORS: environment,git,github
+      # --no-product-binding on every run: the hosted platform returns 401 on
+      # /api/auth/resolve-binding for this repo's workflow login token (see plan log).
       EVID: ${{ github.workspace }}/evidence
     steps:
       - name: install cilock
@@ -60,23 +62,23 @@ jobs:
 
       - name: source
         working-directory: src
-        run: cilock run --step source -a "$ATTESTORS" -o "$EVID/source.att.json" -- bash .attest/source.sh
+        run: cilock run --no-product-binding --step source -a "$ATTESTORS" -o "$EVID/source.att.json" -- bash .attest/source.sh
 
       - name: deps
         working-directory: src
-        run: cilock run --step deps -a "$ATTESTORS" -o "$EVID/deps.att.json" -- bash .attest/deps.sh
+        run: cilock run --no-product-binding --step deps -a "$ATTESTORS" -o "$EVID/deps.att.json" -- bash .attest/deps.sh
 
       - name: build
         working-directory: src
-        run: cilock run --step build -a "$ATTESTORS" -o "$EVID/build.att.json" -- ./.ci/ci-script.sh
+        run: cilock run --no-product-binding --step build -a "$ATTESTORS" -o "$EVID/build.att.json" -- ./.ci/ci-script.sh
 
       - name: app-bundle
         working-directory: src
-        run: cilock run --step app-bundle -a "$ATTESTORS" -o "$EVID/app-bundle.att.json" -- ./packaging/macosx/3_make_hb_darktable_package.sh
+        run: cilock run --no-product-binding --step app-bundle -a "$ATTESTORS" -o "$EVID/app-bundle.att.json" -- ./packaging/macosx/3_make_hb_darktable_package.sh
 
       - name: dmg
         working-directory: src
-        run: cilock run --step dmg -a "$ATTESTORS" -o "$EVID/dmg.att.json" -- ./packaging/macosx/4_make_hb_darktable_dmg.sh
+        run: cilock run --no-product-binding --step dmg -a "$ATTESTORS" -o "$EVID/dmg.att.json" -- ./packaging/macosx/4_make_hb_darktable_dmg.sh
 
       - name: locate dmg
         working-directory: src
@@ -92,11 +94,11 @@ jobs:
 
       - name: sbom
         working-directory: src
-        run: cilock run --step sbom -a "$ATTESTORS,sbom" -o "$EVID/sbom.att.json" -- syft dir:build/macosx/package -o spdx-json=build/macosx/darktable.spdx.json
+        run: cilock run --no-product-binding --step sbom -a "$ATTESTORS,sbom" -o "$EVID/sbom.att.json" -- syft dir:build/macosx/package -o spdx-json=build/macosx/darktable.spdx.json
 
       - name: scan
         working-directory: src
-        run: cilock run --step scan -a "$ATTESTORS,trivy" --ignore-command-exit-code -o "$EVID/scan.att.json" -- trivy fs --scanners vuln --format json --output build/macosx/darktable.trivy.json build/macosx/package
+        run: cilock run --no-product-binding --step scan -a "$ATTESTORS,trivy" --ignore-command-exit-code -o "$EVID/scan.att.json" -- trivy fs --scanners vuln --format json --output build/macosx/darktable.trivy.json build/macosx/package
 
       - name: summary
         if: always()
