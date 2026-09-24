@@ -1,15 +1,17 @@
 # Attested macOS build of darktable — experiment on a personal fork.
 #
-# Phase 1: the upstream nightly macOS job, with every build step wrapped by
-# cilock-action. Each step produces one signed record (keyless, signed with this
-# workflow's GitHub OIDC identity via the platform's Fulcio) and uploads it to
-# the TestifySec platform under product `darktable`. SBOM and vulnerability
-# scan steps are added after packaging.
+# Phase 1: the upstream nightly macOS job with every build step wrapped by the
+# cilock CLI. Each step produces one signed record and uploads it to the
+# TestifySec platform. Signing is keyless: inside GitHub Actions, cilock's
+# Fulcio signer fetches this workflow's OIDC token itself, and Archivista
+# upload auth uses the same OIDC identity (trusted with `cilock trust github`).
 #
-# Baseline (phase 0, no attestation) was run 36046970463: 26m 13s total.
+# Uses the CLI directly rather than aflock-ai/cilock-action: v4.x tags have no
+# release binaries (404) and v3.0.8's shim fails on Node 24 (MODULE_NOT_FOUND).
+# The CLI is also exactly what a Jenkins / TeamCity agent would run.
 #
-# Runs only on pushes to `attested-build` or by hand. Never touches tags or
-# releases (unlike upstream nightly.yml's upload_to_release job).
+# Baseline (phase 0, no attestation): run 36046970463, 26m 13s total.
+# Runs only on pushes to `attested-build` or by hand. Never touches tags or releases.
 
 name: attested-macos
 
@@ -39,55 +41,46 @@ jobs:
       CMAKE_BUILD_TYPE: Release
       GENERATOR: Ninja
       TARGET: skiptest
+      CILOCK_SKIP_VERSION_CHECK: "1"
+      # Same attestors on every step; extras are appended per step.
+      ATTESTORS: environment,git,github
+      EVID: ${{ github.workspace }}/evidence
     steps:
-      # The clone itself cannot be attested by the git attestor (there is no repo
+      - name: install cilock
+        run: |
+          mkdir -p "$HOME/.local/bin" "$EVID"
+          curl -fsSL https://cilock.dev/install.sh | CILOCK_BIN_DIR="$HOME/.local/bin" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/cilock" version
+
+      # The clone itself cannot be attested by the git attestor (no repo exists
       # until it finishes). Every later step records the commit it built from.
       - name: clone
         run: git clone -b ${{ github.ref_name }} https://github.com/${{ github.repository }} src
 
       - name: source
-        uses: aflock-ai/cilock-action@v3.0.8
-        with:
-          step: source
-          workingdir: src
-          attestations: "environment git github"
-          command: "bash .attest/source.sh"
+        working-directory: src
+        run: cilock run --step source -a "$ATTESTORS" -o "$EVID/source.att.json" -- bash .attest/source.sh
 
       - name: deps
-        uses: aflock-ai/cilock-action@v3.0.8
-        with:
-          step: deps
-          workingdir: src
-          attestations: "environment git github"
-          command: "bash .attest/deps.sh"
+        working-directory: src
+        run: cilock run --step deps -a "$ATTESTORS" -o "$EVID/deps.att.json" -- bash .attest/deps.sh
 
       - name: build
-        uses: aflock-ai/cilock-action@v3.0.8
-        with:
-          step: build
-          workingdir: src
-          attestations: "environment git github"
-          command: "./.ci/ci-script.sh"
+        working-directory: src
+        run: cilock run --step build -a "$ATTESTORS" -o "$EVID/build.att.json" -- ./.ci/ci-script.sh
 
       - name: app-bundle
-        uses: aflock-ai/cilock-action@v3.0.8
-        with:
-          step: app-bundle
-          workingdir: src
-          attestations: "environment git github"
-          command: "./packaging/macosx/3_make_hb_darktable_package.sh"
+        working-directory: src
+        run: cilock run --step app-bundle -a "$ATTESTORS" -o "$EVID/app-bundle.att.json" -- ./packaging/macosx/3_make_hb_darktable_package.sh
 
       - name: dmg
-        uses: aflock-ai/cilock-action@v3.0.8
-        with:
-          step: dmg
-          workingdir: src
-          attestations: "environment git github"
-          command: "./packaging/macosx/4_make_hb_darktable_dmg.sh"
+        working-directory: src
+        run: cilock run --step dmg -a "$ATTESTORS" -o "$EVID/dmg.att.json" -- ./packaging/macosx/4_make_hb_darktable_dmg.sh
 
       - name: locate dmg
+        working-directory: src
         run: |
-          cd "${SRC_DIR}"
           VERSION=$(git describe --tags --match release-* | sed 's/^release-//;s/-/+/;s/-/~/;s/rc/~rc/')
           DMG="${INSTALL_PREFIX}/darktable-${VERSION}-$(uname -m).dmg"
           ls -la "$DMG"
@@ -97,33 +90,28 @@ jobs:
           echo "dmg sha256: $HEX"
           brew install syft trivy
 
-      # SBOM + scan name the .dmg explicitly as a subject, so the platform's
-      # subject graph links them to the installer (for `cilock bundle create`).
       - name: sbom
-        uses: aflock-ai/cilock-action@v3.0.8
-        with:
-          step: sbom
-          workingdir: src
-          attestations: "environment git github sbom"
-          subjects: "darktable-dmg=sha256:${{ env.DMG_HEX }}"
-          command: "syft dir:build/macosx/package -o spdx-json=build/macosx/darktable.spdx.json"
+        working-directory: src
+        run: cilock run --step sbom -a "$ATTESTORS,sbom" -o "$EVID/sbom.att.json" -- syft dir:build/macosx/package -o spdx-json=build/macosx/darktable.spdx.json
 
       - name: scan
-        uses: aflock-ai/cilock-action@v3.0.8
-        with:
-          step: scan
-          workingdir: src
-          attestations: "environment git github trivy"
-          subjects: "darktable-dmg=sha256:${{ env.DMG_HEX }}"
-          cilock-args: "--ignore-command-exit-code"
-          command: "trivy fs --scanners vuln --format json --output build/macosx/darktable.trivy.json build/macosx/package"
+        working-directory: src
+        run: cilock run --step scan -a "$ATTESTORS,trivy" --ignore-command-exit-code -o "$EVID/scan.att.json" -- trivy fs --scanners vuln --format json --output build/macosx/darktable.trivy.json build/macosx/package
+
+      - name: summary
+        if: always()
+        run: |
+          ls -la "$EVID" || true
+          echo "dmg sha256: ${DMG_HEX:-unknown}"
 
       - name: upload
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: darktable-macos-attested
           retention-days: 3
           path: |
             ${{ env.DMG }}
+            ${{ env.EVID }}
             src/build/macosx/darktable.spdx.json
             src/build/macosx/darktable.trivy.json
