@@ -1,0 +1,47 @@
+# Quick CI test of `cilock bundle create` with the workflow OIDC identity.
+# Seeds with commit 53ff2097 (run 36169431521), whose 7 step records are already
+# on the platform. Runs only on pushes to `bundle-test`. About one minute.
+name: bundle-test
+
+on:
+  push:
+    branches: [bundle-test]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    env:
+      CILOCK_SKIP_VERSION_CHECK: "1"
+      SEED: 53ff2097bd1fa5dd52d61179cae63da0fa9f3aa7
+    steps:
+      - name: install cilock
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL https://cilock.dev/install.sh | CILOCK_BIN_DIR="$HOME/.local/bin" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: A. no credentials (what the full workflow did before)
+        run: |
+          cilock bundle create --max-depth 1 -s "$SEED" -o a.tar.gz || echo "exit $? (expected 401)"
+
+      - name: B. workflow OIDC token passed explicitly
+        run: |
+          TOK=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://platform.testifysec.com/archivista" | jq -r .value)
+          echo "::add-mask::$TOK"
+          cilock bundle create --max-depth 1 -s "$SEED" \
+            --archivista-headers "Authorization: Bearer $TOK" -o b.tar.gz
+          cilock bundle inspect b.tar.gz | cut -c1-160
+
+      - name: C. same, but with the sha1-prefixed seed the help text suggests
+        run: |
+          TOK=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://platform.testifysec.com/archivista" | jq -r .value)
+          echo "::add-mask::$TOK"
+          cilock bundle create --max-depth 1 -s "sha1:$SEED" \
+            --archivista-headers "Authorization: Bearer $TOK" -o c.tar.gz
+          cilock bundle inspect c.tar.gz | grep envelopes
