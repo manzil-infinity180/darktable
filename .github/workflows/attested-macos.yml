@@ -87,15 +87,15 @@ jobs:
 
       - name: build
         working-directory: src
-        run: mkdir -p "$BUILD_DIR" "$INSTALL_PREFIX" && cilock run --no-product-binding --enable-archivista --step build -a "$ATTESTORS" -o "$EVID/build.att.json" -- ./.ci/ci-script.sh
+        run: mkdir -p "$BUILD_DIR" "$INSTALL_PREFIX" && cilock run --no-product-binding --enable-archivista --step build -a "$ATTESTORS" -o "$EVID/build.att.json" -- sh -c './.ci/ci-script.sh > build/logs-build.txt 2>&1; rc=$?; tail -40 build/logs-build.txt; exit $rc'
 
       - name: app-bundle
         working-directory: src
-        run: cilock run --no-product-binding --enable-archivista --step app-bundle -a "$ATTESTORS" -o "$EVID/app-bundle.att.json" -- ./packaging/macosx/3_make_hb_darktable_package.sh
+        run: cilock run --no-product-binding --enable-archivista --step app-bundle -a "$ATTESTORS" -o "$EVID/app-bundle.att.json" -- sh -c './packaging/macosx/3_make_hb_darktable_package.sh > build/logs-app-bundle.txt 2>&1; rc=$?; tail -40 build/logs-app-bundle.txt; exit $rc'
 
       - name: dmg
         working-directory: src
-        run: cilock run --no-product-binding --enable-archivista --step dmg -a "$ATTESTORS" -o "$EVID/dmg.att.json" -- ./packaging/macosx/4_make_hb_darktable_dmg.sh
+        run: cilock run --no-product-binding --enable-archivista --step dmg -a "$ATTESTORS" -o "$EVID/dmg.att.json" -- sh -c './packaging/macosx/4_make_hb_darktable_dmg.sh > build/logs-dmg.txt 2>&1; rc=$?; tail -40 build/logs-dmg.txt; exit $rc'
 
       - name: locate dmg
         working-directory: src
