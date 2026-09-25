@@ -123,9 +123,23 @@ jobs:
       # --- Phase 2: bundle every record linked to the .dmg, store both in JFrog ---
       - name: bundle
         run: |
-          # Preferred: ask the platform for every envelope reachable from the .dmg's
-          # digest through its subject graph (what a release gate would do).
-          if cilock bundle create -s "sha256:${DMG_HEX}" -o "$EVID/darktable-bundle.tar.gz"; then
+          # Preferred: ask the platform for every record of THIS commit (what a release
+          # gate would do). Three workarounds, each found by testing locally first:
+          #  - bundle create reads with a stored `cilock login` token or --archivista-headers
+          #    only; CI has neither, so mint the workflow OIDC token for the archivista
+          #    audience (the trusted credential carries attestation:read) and pass it.
+          #  - the platform stores subject digests as bare hex, so a `sha256:`/`sha1:`
+          #    prefixed seed matches nothing: seed with the bare commit hash.
+          #  - the default walk (depth 5) hops through shared subjects into other runs
+          #    (146 records locally); depth 1 is exactly this commit's records.
+          TOK=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://platform.testifysec.com/archivista" | jq -r .value)
+          echo "::add-mask::$TOK"
+          COMMIT=$(git -C "$SRC_DIR" rev-parse HEAD)
+          if cilock bundle create --max-depth 1 -s "$COMMIT" \
+               --archivista-headers "Authorization: Bearer $TOK" \
+               -o "$EVID/darktable-bundle.tar.gz" \
+             && cilock bundle inspect "$EVID/darktable-bundle.tar.gz" | grep -q 'envelopes: [1-9]'; then
             echo "BUNDLE_SOURCE=platform" >> "$GITHUB_ENV"
             cilock bundle inspect "$EVID/darktable-bundle.tar.gz" || true
           else
