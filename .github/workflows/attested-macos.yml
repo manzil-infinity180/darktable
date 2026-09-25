@@ -54,6 +54,7 @@ jobs:
       - name: install cilock
         run: |
           mkdir -p "$HOME/.local/bin" "$EVID"
+          mkdir -p "$HOME/.local/bin"
           curl -fsSL https://cilock.dev/install.sh | CILOCK_BIN_DIR="$HOME/.local/bin" sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/cilock" version
@@ -196,6 +197,7 @@ jobs:
     steps:
       - name: tools
         run: |
+          mkdir -p "$HOME/.local/bin"
           curl -fsSL https://cilock.dev/install.sh | CILOCK_BIN_DIR="$HOME/.local/bin" sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           ORAS_VERSION=1.2.3
